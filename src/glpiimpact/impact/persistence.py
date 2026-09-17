@@ -8,6 +8,7 @@ from typing import Any
 from playwright.sync_api import Page
 
 from .builder import ImpactBuilder
+from .network import ImpactNetworkRecorder
 
 
 class PersistenceError(RuntimeError):
@@ -21,6 +22,7 @@ class SaveResult:
     dry_run: bool
     delta_before: dict[str, Any]
     delta_after: dict[str, Any] | None = None
+    requests: list[dict[str, Any]] | None = None
 
 
 class ImpactPersistence:
@@ -28,7 +30,7 @@ class ImpactPersistence:
 
     Direct calls to ``ajax/impact.php`` are intentionally not implemented.
     A real write requires ``confirm=True`` and an unambiguous visible save
-    control. The default behavior is therefore a non-mutating dry run.
+    control. Network evidence is captured with sensitive headers redacted.
     """
 
     SAVE_PATTERN = r"save|apply|update|guardar|aplicar|actualizar"
@@ -41,24 +43,17 @@ class ImpactPersistence:
         return self.builder.compute_delta()
 
     def has_pending_changes(self) -> bool:
-        delta = self.pending_delta()
-        return self._contains_change(delta)
+        return self._contains_change(self.pending_delta())
 
     def save_controls(self) -> list[dict[str, Any]]:
-        """Return visible controls whose metadata indicates a save action."""
         return self.page.evaluate(
             """pattern => [...document.querySelectorAll('button, a, input[type=submit]')]
                 .filter(el => {
                     const style = window.getComputedStyle(el);
                     const visible = style.display !== 'none' && style.visibility !== 'hidden';
-                    const text = [
-                        el.innerText,
-                        el.value,
-                        el.title,
-                        el.getAttribute('aria-label'),
-                        el.name,
-                        el.id
-                    ].filter(Boolean).join(' ');
+                    const text = [el.innerText, el.value, el.title,
+                        el.getAttribute('aria-label'), el.name, el.id]
+                        .filter(Boolean).join(' ');
                     return visible && new RegExp(pattern, 'i').test(text);
                 })
                 .map((el, index) => ({
@@ -76,10 +71,9 @@ class ImpactPersistence:
     def save(self, *, confirm: bool = False, timeout: int = 30_000) -> SaveResult:
         delta_before = self.pending_delta()
         if not self._contains_change(delta_before):
-            return SaveResult(False, False, not confirm, delta_before, delta_before)
-
+            return SaveResult(False, False, not confirm, delta_before, delta_before, [])
         if not confirm:
-            return SaveResult(False, False, True, delta_before, None)
+            return SaveResult(False, False, True, delta_before, None, [])
 
         controls = self.save_controls()
         if len(controls) != 1:
@@ -87,34 +81,40 @@ class ImpactPersistence:
                 f"Expected exactly one visible GLPI save control, found {len(controls)}"
             )
 
-        control = controls[0]
-        selector = self._selector(control)
-        locator = self.page.locator(selector).first
-        locator.click()
-
-        self.page.wait_for_timeout(500)
+        recorder = ImpactNetworkRecorder(self.page).start()
         try:
-            self.page.wait_for_function(
-                """() => {
-                    if (!window.GLPIImpact || !GLPIImpact.computeDelta) return false;
-                    const delta = GLPIImpact.computeDelta();
-                    const changed = value => {
-                        if (Array.isArray(value)) return value.length > 0;
-                        if (value && typeof value === 'object') {
-                            return Object.values(value).some(changed);
-                        }
-                        return value !== null && value !== undefined && value !== false && value !== '';
-                    };
-                    return !changed(delta);
-                }""",
-                timeout=timeout,
-            )
-        except Exception:
-            pass
+            self.page.locator(self._selector(controls[0])).first.click()
+            self.page.wait_for_timeout(500)
+            try:
+                self.page.wait_for_function(
+                    """() => {
+                        if (!window.GLPIImpact || !GLPIImpact.computeDelta) return false;
+                        const delta = GLPIImpact.computeDelta();
+                        const changed = value => {
+                            if (Array.isArray(value)) return value.length > 0;
+                            if (value && typeof value === 'object')
+                                return Object.values(value).some(changed);
+                            return value !== null && value !== undefined && value !== false && value !== '' && value !== 0;
+                        };
+                        return !changed(delta);
+                    }""",
+                    timeout=timeout,
+                )
+            except Exception:
+                pass
+        finally:
+            recorder.stop()
 
         delta_after = self.pending_delta()
         persisted = not self._contains_change(delta_after)
-        return SaveResult(True, persisted, False, delta_before, delta_after)
+        return SaveResult(
+            True,
+            persisted,
+            False,
+            delta_before,
+            delta_after,
+            recorder.snapshot(),
+        )
 
     @classmethod
     def _contains_change(cls, value: Any) -> bool:

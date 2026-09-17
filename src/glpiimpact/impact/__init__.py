@@ -4,6 +4,7 @@ from .builder import ImpactBuilder
 from .exporter import ImpactExporter
 from .graph import ImpactEdge, ImpactGraph, ImpactNode
 from .importer import ImpactImporter
+from .inspector import ImpactInspector
 
 __all__ = [
     "ImpactNode",
@@ -12,4 +13,5 @@ __all__ = [
     "ImpactBuilder",
     "ImpactExporter",
     "ImpactImporter",
+    "ImpactInspector",
 ]

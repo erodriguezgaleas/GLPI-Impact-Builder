@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+
 @dataclass(slots=True)
 class BrowserOptions:
     headless: bool = False
@@ -12,3 +13,4 @@ class BrowserOptions:
     viewport_height: int = 900
     accept_downloads: bool = True
     download_path: Path = Path("downloads")
+    storage_state: Path | None = None

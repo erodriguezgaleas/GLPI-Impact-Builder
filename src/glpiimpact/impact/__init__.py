@@ -6,6 +6,7 @@ from .graph import ImpactEdge, ImpactGraph, ImpactNode
 from .importer import ImpactImporter
 from .inspector import ImpactInspector
 from .navigator import ImpactNavigator
+from .network import CapturedRequest, ImpactNetworkRecorder
 from .persistence import ImpactPersistence, PersistenceError, SaveResult
 
 __all__ = [
@@ -17,6 +18,8 @@ __all__ = [
     "ImpactImporter",
     "ImpactInspector",
     "ImpactNavigator",
+    "CapturedRequest",
+    "ImpactNetworkRecorder",
     "ImpactPersistence",
     "PersistenceError",
     "SaveResult",

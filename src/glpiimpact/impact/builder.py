@@ -12,29 +12,22 @@ from .graph import ImpactEdge, ImpactNode
 class ImpactBuilder:
     """Interact with the GLPI Impact workspace through the browser page.
 
-    This adapter deliberately uses the GLPIImpact object already loaded by the
-    GLPI UI instead of reproducing GLPI Cloud's private AJAX implementation.
+    The adapter uses the GLPIImpact object loaded by the GLPI UI instead of
+    reproducing GLPI Cloud's private AJAX implementation.
     """
 
     def __init__(self, page: Page):
         self.page = page
 
     def wait_until_ready(self, timeout: int = 30_000) -> None:
-        """Wait until GLPIImpact and its Cytoscape instance are available."""
         self.page.wait_for_function(
-            "() => Boolean(window.GLPIImpact && GLPIImpact.cy)",
-            timeout=timeout,
+            "() => Boolean(window.GLPIImpact && GLPIImpact.cy)", timeout=timeout
         )
 
     def is_ready(self) -> bool:
-        return bool(
-            self.page.evaluate(
-                "() => Boolean(window.GLPIImpact && GLPIImpact.cy)"
-            )
-        )
+        return bool(self.page.evaluate("() => Boolean(window.GLPIImpact && GLPIImpact.cy)"))
 
     def constants(self) -> dict[str, Any]:
-        """Return the known numeric GLPIImpact constants from the live page."""
         names = [
             "NODE", "EDGE", "DEFAULT", "FORWARD", "BACKWARD", "BOTH",
             "EDITION_DEFAULT", "EDITION_ADD_NODE", "EDITION_ADD_EDGE",
@@ -50,84 +43,108 @@ class ImpactBuilder:
             "NODE_ID_SEPERATOR", "EDGE_ID_SEPERATOR",
         ]
         return self.page.evaluate(
-            """names => Object.fromEntries(
-                names
-                    .filter(name => typeof GLPIImpact[name] !== 'undefined')
-                    .map(name => [name, GLPIImpact[name]])
-            )""",
+            """names => Object.fromEntries(names
+                .filter(name => typeof GLPIImpact[name] !== 'undefined')
+                .map(name => [name, GLPIImpact[name]]))""",
             names,
         )
 
+    def methods(self) -> list[str]:
+        """List callable properties visible on the live GLPIImpact object."""
+        self.wait_until_ready()
+        return self.page.evaluate(
+            """() => {
+                const names = new Set();
+                let object = GLPIImpact;
+                while (object && object !== Object.prototype) {
+                    Object.getOwnPropertyNames(object).forEach(name => names.add(name));
+                    object = Object.getPrototypeOf(object);
+                }
+                return [...names]
+                    .filter(name => typeof GLPIImpact[name] === 'function')
+                    .sort();
+            }"""
+        )
+
     def current_state(self) -> dict[str, Any]:
-        """Return GLPIImpact.getCurrentState() from the live workspace."""
         self.wait_until_ready()
         return self.page.evaluate("() => GLPIImpact.getCurrentState()")
 
     def initial_state(self) -> dict[str, Any]:
-        """Return a serializable copy of GLPIImpact.initialState."""
         self.wait_until_ready()
-        return self.page.evaluate(
-            "() => JSON.parse(JSON.stringify(GLPIImpact.initialState || {}))"
-        )
+        return self.page.evaluate("() => JSON.parse(JSON.stringify(GLPIImpact.initialState || {}))")
 
     def compute_delta(self) -> dict[str, Any]:
-        """Ask GLPI itself to compute the pending workspace delta."""
         self.wait_until_ready()
         return self.page.evaluate("() => GLPIImpact.computeDelta()")
 
     def nodes(self) -> list[dict[str, Any]]:
         self.wait_until_ready()
-        return self.page.evaluate(
-            "() => GLPIImpact.cy.nodes().map(node => node.data())"
-        )
+        return self.page.evaluate("() => GLPIImpact.cy.nodes().map(node => node.data())")
 
     def edges(self) -> list[dict[str, Any]]:
         self.wait_until_ready()
-        return self.page.evaluate(
-            "() => GLPIImpact.cy.edges().map(edge => edge.data())"
-        )
+        return self.page.evaluate("() => GLPIImpact.cy.edges().map(edge => edge.data())")
 
-    def add_node(
-        self,
-        node: ImpactNode,
-        position: dict[str, float] | None = None,
-    ) -> Any:
-        """Call GLPIImpact.addNode using the signature observed in GLPI Cloud."""
+    def add_node(self, node: ImpactNode, position: dict[str, float] | None = None) -> Any:
         self.wait_until_ready()
         position = position or {"x": node.x or 0, "y": node.y or 0}
         return self.page.evaluate(
-            """args => GLPIImpact.addNode(
-                args.items_id,
-                args.itemtype,
-                args.position
-            )""",
-            {
-                "items_id": node.items_id,
-                "itemtype": node.itemtype,
-                "position": position,
-            },
+            "args => GLPIImpact.addNode(args.items_id, args.itemtype, args.position)",
+            {"items_id": node.items_id, "itemtype": node.itemtype, "position": position},
         )
 
     def has_node(self, node: ImpactNode) -> bool:
         self.wait_until_ready()
-        return bool(
-            self.page.evaluate(
-                "id => GLPIImpact.cy.getElementById(id).length > 0",
-                node.id,
-            )
-        )
+        return bool(self.page.evaluate("id => GLPIImpact.cy.getElementById(id).length > 0", node.id))
 
     def has_edge(self, edge: ImpactEdge) -> bool:
         self.wait_until_ready()
-        return bool(
-            self.page.evaluate(
-                "id => GLPIImpact.cy.getElementById(id).length > 0",
-                edge.id,
-            )
+        return bool(self.page.evaluate("id => GLPIImpact.cy.getElementById(id).length > 0", edge.id))
+
+    def add_edge_to_workspace(self, edge: ImpactEdge) -> dict[str, Any]:
+        """Add a directed Cytoscape edge and let GLPI compute the resulting delta.
+
+        This changes only the browser workspace. Persistence remains a separate
+        explicit operation because GLPI Cloud save behavior must be observed
+        rather than guessed.
+        """
+        self.wait_until_ready()
+        if not self.has_node(edge.source) or not self.has_node(edge.impacted):
+            raise ValueError("Both edge endpoints must already exist in the GLPI Impact workspace")
+        if self.has_edge(edge):
+            return {"created": False, "edge_id": edge.id, "delta": self.compute_delta()}
+
+        result = self.page.evaluate(
+            """args => {
+                const element = GLPIImpact.cy.add({
+                    group: 'edges',
+                    data: {
+                        id: args.id,
+                        source: args.source,
+                        target: args.target
+                    }
+                });
+                return {id: element.id(), data: element.data()};
+            }""",
+            {"id": edge.id, "source": edge.source.id, "target": edge.impacted.id},
         )
+        return {"created": True, "edge": result, "delta": self.compute_delta()}
+
+    def remove_workspace_element(self, element_id: str) -> bool:
+        """Remove an element from Cytoscape without persisting the workspace."""
+        self.wait_until_ready()
+        return bool(self.page.evaluate(
+            """id => {
+                const element = GLPIImpact.cy.getElementById(id);
+                if (!element.length) return false;
+                GLPIImpact.cy.remove(element);
+                return true;
+            }""",
+            element_id,
+        ))
 
     def set_edition_mode(self, mode: int) -> Any:
-        """Delegate edition-mode selection to GLPIImpact."""
         self.wait_until_ready()
         return self.page.evaluate("mode => GLPIImpact.setEditionMode(mode)", mode)
 

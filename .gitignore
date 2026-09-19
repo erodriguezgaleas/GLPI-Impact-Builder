@@ -7,6 +7,10 @@
 .glpi-storage-state.json
 *storage-state*.json
 
+# Runtime captures may contain instance metadata even after redaction
+impact-network-capture*.json
+impact-runtime-report*.json
+
 # Python
 __pycache__/
 *.py[cod]

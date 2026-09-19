@@ -1,11 +1,10 @@
 """Prepare and optionally persist an Impact relationship through GLPI's UI.
 
-Defaults to Computer::15 -> Computer::16. It is a dry run unless
-GLPI_CONFIRM_SAVE is exactly YES. No direct private AJAX endpoint is used.
+A real save is refused unless GLPI computeDelta() explicitly contains the
+expected edge. GLPI_CONFIRM_SAVE must also be exactly YES.
 """
 
 from __future__ import annotations
-
 import json
 import os
 from pathlib import Path
@@ -38,12 +37,20 @@ def main() -> None:
         builder = ImpactBuilder(session.page)
         result = builder.add_edge_to_workspace(edge)
         created = bool(result["created"])
+        delta_detected = bool(result["delta_detected"])
+
+        if confirm and not delta_detected:
+            raise SystemExit(
+                "Refusing save: GLPI computeDelta() does not contain the expected edge. "
+                "Run examples/inspect_edge_runtime.py and reproduce GLPI's native edge flow."
+            )
 
         save_result = ImpactPersistence(session.page, builder).save(confirm=confirm)
         persisted = save_result.persisted
         print(json.dumps({
             "edge": edge.id,
             "created_in_workspace": created,
+            "glpi_delta_detected": delta_detected,
             "save_confirmed": confirm,
             "save_attempted": save_result.attempted,
             "persisted": save_result.persisted,

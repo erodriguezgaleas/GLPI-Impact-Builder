@@ -1,28 +1,19 @@
 """Browser-backed adapter for the GLPIImpact JavaScript workspace."""
 
 from __future__ import annotations
-
 from typing import Any
-
 from playwright.sync_api import Page
-
 from .graph import ImpactEdge, ImpactNode
 
 
 class ImpactBuilder:
-    """Interact with the GLPI Impact workspace through the browser page.
-
-    The adapter uses the GLPIImpact object loaded by the GLPI UI instead of
-    reproducing GLPI Cloud's private AJAX implementation.
-    """
+    """Interact with the GLPI Impact workspace through the browser page."""
 
     def __init__(self, page: Page):
         self.page = page
 
     def wait_until_ready(self, timeout: int = 30_000) -> None:
-        self.page.wait_for_function(
-            "() => Boolean(window.GLPIImpact && GLPIImpact.cy)", timeout=timeout
-        )
+        self.page.wait_for_function("() => Boolean(window.GLPIImpact && GLPIImpact.cy)", timeout=timeout)
 
     def is_ready(self) -> bool:
         return bool(self.page.evaluate("() => Boolean(window.GLPIImpact && GLPIImpact.cy)"))
@@ -42,33 +33,24 @@ class ImpactBuilder:
             "ACTION_EDIT_EDGE", "DEFAULT_DEPTH", "MAX_DEPTH", "NO_DEPTH_LIMIT",
             "NODE_ID_SEPERATOR", "EDGE_ID_SEPERATOR",
         ]
-        return self.page.evaluate(
-            """names => Object.fromEntries(names
-                .filter(name => typeof GLPIImpact[name] !== 'undefined')
-                .map(name => [name, GLPIImpact[name]]))""",
-            names,
-        )
+        return self.page.evaluate("""names => Object.fromEntries(names
+            .filter(name => typeof GLPIImpact[name] !== 'undefined')
+            .map(name => [name, GLPIImpact[name]]))""", names)
 
     def methods(self) -> list[str]:
-        """List callable properties visible on the live GLPIImpact object."""
         self.wait_until_ready()
-        return self.page.evaluate(
-            """() => {
-                const names = new Set();
-                let object = GLPIImpact;
-                while (object && object !== Object.prototype) {
-                    Object.getOwnPropertyNames(object).forEach(name => names.add(name));
-                    object = Object.getPrototypeOf(object);
-                }
-                return [...names]
-                    .filter(name => typeof GLPIImpact[name] === 'function')
-                    .sort();
-            }"""
-        )
+        return self.page.evaluate("""() => {
+            const names = new Set(); let object = GLPIImpact;
+            while (object && object !== Object.prototype) {
+                Object.getOwnPropertyNames(object).forEach(name => names.add(name));
+                object = Object.getPrototypeOf(object);
+            }
+            return [...names].filter(name => typeof GLPIImpact[name] === 'function').sort();
+        }""")
 
     def current_state(self) -> dict[str, Any]:
         self.wait_until_ready()
-        return self.page.evaluate("() => GLPIImpact.getCurrentState()")
+        return self.page.evaluate("() => JSON.parse(JSON.stringify(GLPIImpact.getCurrentState()))")
 
     def initial_state(self) -> dict[str, Any]:
         self.wait_until_ready()
@@ -76,15 +58,15 @@ class ImpactBuilder:
 
     def compute_delta(self) -> dict[str, Any]:
         self.wait_until_ready()
-        return self.page.evaluate("() => GLPIImpact.computeDelta()")
+        return self.page.evaluate("() => JSON.parse(JSON.stringify(GLPIImpact.computeDelta()))")
 
     def nodes(self) -> list[dict[str, Any]]:
         self.wait_until_ready()
-        return self.page.evaluate("() => GLPIImpact.cy.nodes().map(node => node.data())")
+        return self.page.evaluate("() => GLPIImpact.cy.nodes().map(n => JSON.parse(JSON.stringify(n.data())))")
 
     def edges(self) -> list[dict[str, Any]]:
         self.wait_until_ready()
-        return self.page.evaluate("() => GLPIImpact.cy.edges().map(edge => edge.data())")
+        return self.page.evaluate("() => GLPIImpact.cy.edges().map(e => JSON.parse(JSON.stringify(e.data())))")
 
     def add_node(self, node: ImpactNode, position: dict[str, float] | None = None) -> Any:
         self.wait_until_ready()
@@ -102,47 +84,52 @@ class ImpactBuilder:
         self.wait_until_ready()
         return bool(self.page.evaluate("id => GLPIImpact.cy.getElementById(id).length > 0", edge.id))
 
-    def add_edge_to_workspace(self, edge: ImpactEdge) -> dict[str, Any]:
-        """Add a directed Cytoscape edge and let GLPI compute the resulting delta.
+    @staticmethod
+    def delta_mentions_edge(delta: dict[str, Any], edge: ImpactEdge) -> bool:
+        source_id, target_id = str(edge.source.items_id), str(edge.impacted.items_id)
+        def walk(value: Any) -> bool:
+            if isinstance(value, dict):
+                if edge.id in value:
+                    return True
+                if (
+                    str(value.get("items_id_source")) == source_id
+                    and str(value.get("items_id_impacted")) == target_id
+                    and value.get("itemtype_source") == edge.source.itemtype
+                    and value.get("itemtype_impacted") == edge.impacted.itemtype
+                ):
+                    return True
+                return any(walk(item) for item in value.values())
+            if isinstance(value, list):
+                return any(walk(item) for item in value)
+            return False
+        return walk(delta)
 
-        This changes only the browser workspace. Persistence remains a separate
-        explicit operation because GLPI Cloud save behavior must be observed
-        rather than guessed.
-        """
+    def add_edge_to_workspace(self, edge: ImpactEdge) -> dict[str, Any]:
+        """Experimental Cytoscape insertion; caller must verify GLPI delta."""
         self.wait_until_ready()
         if not self.has_node(edge.source) or not self.has_node(edge.impacted):
             raise ValueError("Both edge endpoints must already exist in the GLPI Impact workspace")
         if self.has_edge(edge):
-            return {"created": False, "edge_id": edge.id, "delta": self.compute_delta()}
+            delta = self.compute_delta()
+            return {"created": False, "edge_id": edge.id, "delta": delta, "delta_detected": self.delta_mentions_edge(delta, edge)}
 
-        result = self.page.evaluate(
-            """args => {
-                const element = GLPIImpact.cy.add({
-                    group: 'edges',
-                    data: {
-                        id: args.id,
-                        source: args.source,
-                        target: args.target
-                    }
-                });
-                return {id: element.id(), data: element.data()};
-            }""",
-            {"id": edge.id, "source": edge.source.id, "target": edge.impacted.id},
-        )
-        return {"created": True, "edge": result, "delta": self.compute_delta()}
+        result = self.page.evaluate("""args => {
+            const element = GLPIImpact.cy.add({
+                group: 'edges',
+                data: {id: args.id, source: args.source, target: args.target}
+            });
+            return {id: element.id(), data: JSON.parse(JSON.stringify(element.data()))};
+        }""", {"id": edge.id, "source": edge.source.id, "target": edge.impacted.id})
+        delta = self.compute_delta()
+        return {"created": True, "edge": result, "delta": delta, "delta_detected": self.delta_mentions_edge(delta, edge)}
 
     def remove_workspace_element(self, element_id: str) -> bool:
-        """Remove an element from Cytoscape without persisting the workspace."""
         self.wait_until_ready()
-        return bool(self.page.evaluate(
-            """id => {
-                const element = GLPIImpact.cy.getElementById(id);
-                if (!element.length) return false;
-                GLPIImpact.cy.remove(element);
-                return true;
-            }""",
-            element_id,
-        ))
+        return bool(self.page.evaluate("""id => {
+            const element = GLPIImpact.cy.getElementById(id);
+            if (!element.length) return false;
+            GLPIImpact.cy.remove(element); return true;
+        }""", element_id))
 
     def set_edition_mode(self, mode: int) -> Any:
         self.wait_until_ready()

@@ -61,6 +61,34 @@ class ImpactInspector:
             raise AttributeError(f"GLPIImpact method not found: {name}")
         return source
 
+    def method_sources(self, names: list[str]) -> dict[str, str]:
+        """Return sources for available methods, skipping names not present."""
+        result: dict[str, str] = {}
+        for name in names:
+            try:
+                result[name] = self.method_source(name)
+            except AttributeError:
+                continue
+        return result
+
+    def edge_runtime_report(self) -> dict[str, Any]:
+        """Collect the methods most relevant to edge creation and delta building."""
+        names = [
+            "computeDelta",
+            "computeEdgeDelta",
+            "computeItemsDelta",
+            "computeContext",
+            "getCurrentState",
+            "addNode",
+            "setEditionMode",
+            "enterEditionMode",
+        ]
+        return {
+            "runtime": self.describe(),
+            "method_sources": self.method_sources(names),
+            "save_candidates": self.save_candidates(),
+        }
+
     def save_candidates(self) -> list[dict[str, Any]]:
         """Find likely save/apply controls in the current GLPI Impact page."""
         return self.page.evaluate(

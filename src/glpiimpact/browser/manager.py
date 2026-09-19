@@ -1,5 +1,7 @@
 """Browser manager for Playwright lifecycle."""
 
+from typing import Any
+
 from playwright.sync_api import sync_playwright
 
 from .context import ContextManager
@@ -18,7 +20,12 @@ class BrowserManager:
         self.page = None
 
     def start(self) -> BrowserSession:
-        if self.page is not None:
+        if self.page is not None and not self.page.is_closed():
+            return BrowserSession(self.page)
+
+        if self.context is not None:
+            self.page = self.context.new_page()
+            self.page.set_default_timeout(self.options.timeout)
             return BrowserSession(self.page)
 
         self._playwright = sync_playwright().start()
@@ -27,7 +34,7 @@ class BrowserManager:
             slow_mo=self.options.slow_mo,
         )
 
-        context_options = {
+        context_options: dict[str, Any] = {
             "accept_downloads": self.options.accept_downloads,
             "viewport": {
                 "width": self.options.viewport_width,

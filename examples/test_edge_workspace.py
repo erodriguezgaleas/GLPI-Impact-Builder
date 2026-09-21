@@ -1,16 +1,14 @@
 """Test an Impact relationship in the browser workspace without saving it.
 
-Defaults model the reverse-engineering case Computer::15 -> Computer::16.
-The report explicitly distinguishes a Cytoscape edge from a GLPI-recognized
-pending delta. This script NEVER clicks Save.
+Defaults model Computer::15 -> Computer::16. Direct Cytoscape insertion is only
+a diagnostic fallback; GLPI computeDelta() remains the source of truth for
+whether the workspace recognizes the relationship. This script NEVER saves.
 """
 
 from __future__ import annotations
-
 import json
 import os
 from pathlib import Path
-
 from glpiimpact.browser import BrowserManager, BrowserOptions
 from glpiimpact.impact import ImpactBuilder, ImpactEdge, ImpactNavigator, ImpactNode
 
@@ -20,29 +18,6 @@ def required(name: str) -> str:
     if not value:
         raise SystemExit(f"Missing required environment variable: {name}")
     return value
-
-
-def delta_contains_edge(delta: dict, edge: ImpactEdge) -> bool:
-    source_id = str(edge.source.items_id)
-    target_id = str(edge.impacted.items_id)
-
-    def walk(value) -> bool:
-        if isinstance(value, dict):
-            if edge.id in value:
-                return True
-            if (
-                str(value.get("items_id_source")) == source_id
-                and str(value.get("items_id_impacted")) == target_id
-                and value.get("itemtype_source") == edge.source.itemtype
-                and value.get("itemtype_impacted") == edge.impacted.itemtype
-            ):
-                return True
-            return any(walk(item) for item in value.values())
-        if isinstance(value, list):
-            return any(walk(item) for item in value)
-        return False
-
-    return walk(delta)
 
 
 def main() -> None:
@@ -63,15 +38,16 @@ def main() -> None:
         result = builder.add_edge_to_workspace(edge)
         created = bool(result["created"])
         after = result["delta"]
-        detected = delta_contains_edge(after, edge)
+        detected = bool(result["delta_detected"])
 
         print(json.dumps({
             "edge": edge.id,
+            "strategy": result["strategy"],
             "source_present": builder.has_node(source),
             "target_present": builder.has_node(target),
-            "created_in_cytoscape": created,
+            "created_in_workspace": created,
             "glpi_delta_detected": detected,
-            "native_edge_flow_required": created and not detected,
+            "native_edge_flow_required": result["strategy"] == "cytoscape_fallback" and not detected,
             "delta_before": before,
             "delta_after": after,
         }, indent=2, ensure_ascii=False))

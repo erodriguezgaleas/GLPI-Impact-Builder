@@ -2,7 +2,8 @@
 
 A real save is refused unless GLPI computeDelta() contains the expected edge.
 Successful persistence is reported only if the edge remains after reopening the
-Impact workspace.
+Impact workspace. Captured XHR/fetch evidence includes redacted URLs/bodies and
+HTTP response status.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ def main() -> None:
             "persisted": save_result.persisted,
             "verification": save_result.verification,
             "delta_cleared": save_result.delta_cleared,
+            "successful_write_responses": save_result.successful_write_responses,
             "reloaded_edge_present": save_result.reloaded_edge_present,
             "delta_before_save": save_result.delta_before,
             "delta_after_save": save_result.delta_after,

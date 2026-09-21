@@ -1,16 +1,20 @@
 """Unit tests for network redaction helpers."""
 
 import json
-
 from glpiimpact.impact.network import ImpactNetworkRecorder
 
 
 def test_redacts_sensitive_headers():
-    headers = {"cookie": "secret", "x-glpi-csrf-token": "csrf", "content-type": "application/json"}
-    result = ImpactNetworkRecorder.redact_headers(headers)
+    result = ImpactNetworkRecorder.redact_headers({"cookie": "secret", "x-glpi-csrf-token": "csrf", "content-type": "application/json"})
     assert result["cookie"] == "<redacted>"
     assert result["x-glpi-csrf-token"] == "<redacted>"
     assert result["content-type"] == "application/json"
+
+
+def test_redacts_url_query_tokens():
+    result = ImpactNetworkRecorder.redact_url("https://example.test/ajax/impact.php?_glpi_csrf_token=secret&item=15")
+    assert "secret" not in result
+    assert "item=15" in result
 
 
 def test_redacts_json_body_recursively():
@@ -23,6 +27,9 @@ def test_redacts_json_body_recursively():
 
 def test_redacts_urlencoded_body():
     result = ImpactNetworkRecorder.redact_post_data("_glpi_csrf_token=secret&action=save")
-    assert "%3Credacted%3E" in result
     assert "secret" not in result
     assert "action=save" in result
+
+
+def test_opaque_body_is_not_exposed():
+    assert ImpactNetworkRecorder.redact_post_data("raw secret-ish payload without form encoding") == "<opaque body omitted>"

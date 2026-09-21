@@ -105,13 +105,17 @@ class ImpactBuilder:
         return walk(delta)
 
     def add_edge_to_workspace(self, edge: ImpactEdge) -> dict[str, Any]:
-        """Experimental Cytoscape insertion; caller must verify GLPI delta."""
+        """Experimental fallback insertion; never presented as GLPI's native edge flow."""
         self.wait_until_ready()
         if not self.has_node(edge.source) or not self.has_node(edge.impacted):
             raise ValueError("Both edge endpoints must already exist in the GLPI Impact workspace")
         if self.has_edge(edge):
             delta = self.compute_delta()
-            return {"created": False, "edge_id": edge.id, "delta": delta, "delta_detected": self.delta_mentions_edge(delta, edge)}
+            return {
+                "created": False, "edge_id": edge.id, "delta": delta,
+                "delta_detected": self.delta_mentions_edge(delta, edge),
+                "strategy": "existing",
+            }
 
         result = self.page.evaluate("""args => {
             const element = GLPIImpact.cy.add({
@@ -121,7 +125,11 @@ class ImpactBuilder:
             return {id: element.id(), data: JSON.parse(JSON.stringify(element.data()))};
         }""", {"id": edge.id, "source": edge.source.id, "target": edge.impacted.id})
         delta = self.compute_delta()
-        return {"created": True, "edge": result, "delta": delta, "delta_detected": self.delta_mentions_edge(delta, edge)}
+        return {
+            "created": True, "edge": result, "delta": delta,
+            "delta_detected": self.delta_mentions_edge(delta, edge),
+            "strategy": "cytoscape_fallback",
+        }
 
     def remove_workspace_element(self, element_id: str) -> bool:
         self.wait_until_ready()

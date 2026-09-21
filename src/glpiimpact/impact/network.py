@@ -6,29 +6,32 @@ import json
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from playwright.sync_api import Page, Request
+from playwright.sync_api import Page, Request, Response
 
 SENSITIVE_HEADERS = {"authorization", "cookie", "proxy-authorization", "set-cookie", "x-glpi-csrf-token", "x-csrf-token"}
 SENSITIVE_FIELDS = {"_glpi_csrf_token", "csrf", "csrf_token", "password", "login_password", "token", "access_token", "refresh_token", "secret", "api_key", "apikey"}
 
 
-@dataclass(frozen=True)
+@dataclass
 class CapturedRequest:
     method: str
     url: str
     resource_type: str
     headers: dict[str, str]
     post_data: str | None
+    status: int | None = None
+    ok: bool | None = None
 
 
 class ImpactNetworkRecorder:
-    """Capture a short request window with secrets redacted before storage."""
+    """Capture a short XHR/fetch window with secrets redacted before storage."""
 
     def __init__(self, page: Page, *, impact_only: bool = True):
         self.page = page
         self.impact_only = impact_only
         self.requests: list[CapturedRequest] = []
         self._active = False
+        self._pending: dict[int, CapturedRequest] = {}
 
     @staticmethod
     def _sensitive(name: str) -> bool:
@@ -66,36 +69,59 @@ class ImpactNetworkRecorder:
             return urlencode([(k, "<redacted>" if cls._sensitive(k) else v) for k, v in pairs])
         return "<opaque body omitted>"
 
+    def _accept(self, request: Request) -> bool:
+        return request.resource_type in {"xhr", "fetch"} and (
+            not self.impact_only or "impact" in request.url.lower()
+        )
+
     def _on_request(self, request: Request) -> None:
-        if request.resource_type not in {"xhr", "fetch"}:
+        if not self._accept(request):
             return
-        if self.impact_only and "impact" not in request.url.lower():
-            return
-        self.requests.append(CapturedRequest(
+        captured = CapturedRequest(
             method=request.method,
             url=self.redact_url(request.url),
             resource_type=request.resource_type,
             headers=self.redact_headers(request.headers),
             post_data=self.redact_post_data(request.post_data),
-        ))
+        )
+        self.requests.append(captured)
+        self._pending[id(request)] = captured
+
+    def _on_response(self, response: Response) -> None:
+        captured = self._pending.pop(id(response.request), None)
+        if captured is None:
+            return
+        captured.status = response.status
+        captured.ok = response.ok
 
     def start(self) -> "ImpactNetworkRecorder":
         if not self._active:
             self.page.on("request", self._on_request)
+            self.page.on("response", self._on_response)
             self._active = True
         return self
 
     def stop(self) -> list[CapturedRequest]:
         if self._active:
             self.page.remove_listener("request", self._on_request)
+            self.page.remove_listener("response", self._on_response)
             self._active = False
+        self._pending.clear()
         return list(self.requests)
 
     def clear(self) -> None:
         self.requests.clear()
+        self._pending.clear()
 
     def snapshot(self) -> list[dict[str, Any]]:
         return [asdict(request) for request in self.requests]
+
+    def successful_write_responses(self) -> list[dict[str, Any]]:
+        return [
+            item for item in self.snapshot()
+            if item["method"].upper() not in {"GET", "HEAD", "OPTIONS"}
+            and item["ok"] is True
+        ]
 
     def export_json(self, path: str | Path) -> Path:
         destination = Path(path).expanduser().resolve()

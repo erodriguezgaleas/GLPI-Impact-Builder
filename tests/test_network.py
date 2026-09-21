@@ -1,7 +1,7 @@
-"""Unit tests for network redaction helpers."""
+"""Unit tests for network redaction and response evidence helpers."""
 
 import json
-from glpiimpact.impact.network import ImpactNetworkRecorder
+from glpiimpact.impact.network import CapturedRequest, ImpactNetworkRecorder
 
 
 def test_redacts_sensitive_headers():
@@ -33,3 +33,16 @@ def test_redacts_urlencoded_body():
 
 def test_opaque_body_is_not_exposed():
     assert ImpactNetworkRecorder.redact_post_data("raw secret-ish payload without form encoding") == "<opaque body omitted>"
+
+
+def test_successful_write_responses_excludes_reads_and_failures():
+    recorder = object.__new__(ImpactNetworkRecorder)
+    recorder.requests = [
+        CapturedRequest("GET", "https://example.test/a", "xhr", {}, None, 200, True),
+        CapturedRequest("POST", "https://example.test/b", "fetch", {}, "x=1", 200, True),
+        CapturedRequest("POST", "https://example.test/c", "xhr", {}, "x=1", 500, False),
+    ]
+    result = recorder.successful_write_responses()
+    assert len(result) == 1
+    assert result[0]["url"] == "https://example.test/b"
+    assert result[0]["status"] == 200

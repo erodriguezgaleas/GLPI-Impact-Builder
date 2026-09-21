@@ -24,6 +24,7 @@ class SaveResult:
     delta_cleared: bool = False
     verification: str = "not_attempted"
     reloaded_edge_present: bool | None = None
+    successful_write_responses: int = 0
 
 
 class ImpactPersistence:
@@ -91,12 +92,14 @@ class ImpactPersistence:
                 }""", timeout=timeout)
             except PlaywrightTimeoutError:
                 pass
+            self.page.wait_for_timeout(250)
         finally:
             recorder.stop()
 
         delta_after = self.pending_delta()
         delta_cleared = not self._contains_change(delta_after)
         requests = recorder.snapshot()
+        successful_writes = recorder.successful_write_responses()
         persisted = False
         reloaded_edge_present: bool | None = None
         verification = "client_delta_cleared" if delta_cleared else "pending_delta_remains"
@@ -118,6 +121,7 @@ class ImpactPersistence:
             delta_cleared=delta_cleared,
             verification=verification,
             reloaded_edge_present=reloaded_edge_present,
+            successful_write_responses=len(successful_writes),
         )
 
     @classmethod

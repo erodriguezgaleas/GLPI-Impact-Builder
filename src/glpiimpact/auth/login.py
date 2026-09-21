@@ -1,9 +1,7 @@
 """Authentication manager for GLPI."""
 
 from urllib.parse import urljoin
-
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-
 from ..browser.manager import BrowserManager
 
 
@@ -16,18 +14,12 @@ class LoginManager:
 
     def __init__(self, browser: BrowserManager):
         self.browser = browser
+        self.base_url: str | None = None
 
-    def login(
-        self,
-        url: str,
-        username: str,
-        password: str,
-        *,
-        timeout: int = 30_000,
-    ):
+    def login(self, url: str, username: str, password: str, *, timeout: int = 30_000):
         session = self.browser.start()
-        base_url = url.rstrip("/") + "/"
-        session.goto(base_url)
+        self.base_url = url.rstrip("/") + "/"
+        session.goto(self.base_url)
         page = session.page
 
         page.locator("input[name='login_name']").fill(username)
@@ -49,8 +41,11 @@ class LoginManager:
         return session
 
     def logout(self):
-        if self.browser.page and not self.browser.page.is_closed():
-            self.browser.page.goto(urljoin(self.browser.page.url, "front/logout.php"))
+        page = self.browser.page
+        if page and not page.is_closed():
+            if not self.base_url:
+                raise LoginError("Cannot build logout URL before a GLPI base URL is established")
+            page.goto(urljoin(self.base_url, "front/logout.php"))
 
     def is_logged_in(self) -> bool:
         page = self.browser.page

@@ -1,12 +1,9 @@
 """Guarded persistence for GLPI Impact workspaces through the GLPI UI."""
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
-
-from playwright.sync_api import Page
-
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from .builder import ImpactBuilder
 from .network import ImpactNetworkRecorder
 
@@ -23,15 +20,12 @@ class SaveResult:
     delta_before: dict[str, Any]
     delta_after: dict[str, Any] | None = None
     requests: list[dict[str, Any]] | None = None
+    delta_cleared: bool = False
+    verification: str = "not_attempted"
 
 
 class ImpactPersistence:
-    """Persist a prepared workspace only through an observed GLPI UI control.
-
-    Direct calls to ``ajax/impact.php`` are intentionally not implemented.
-    A real write requires ``confirm=True`` and an unambiguous visible save
-    control. Network evidence is captured with sensitive headers redacted.
-    """
+    """Persist through GLPI UI and report evidence without overclaiming success."""
 
     SAVE_PATTERN = r"save|apply|update|guardar|aplicar|actualizar"
 
@@ -46,74 +40,69 @@ class ImpactPersistence:
         return self._contains_change(self.pending_delta())
 
     def save_controls(self) -> list[dict[str, Any]]:
-        return self.page.evaluate(
-            """pattern => [...document.querySelectorAll('button, a, input[type=submit]')]
-                .filter(el => {
-                    const style = window.getComputedStyle(el);
-                    const visible = style.display !== 'none' && style.visibility !== 'hidden';
-                    const text = [el.innerText, el.value, el.title,
-                        el.getAttribute('aria-label'), el.name, el.id]
-                        .filter(Boolean).join(' ');
-                    return visible && new RegExp(pattern, 'i').test(text);
-                })
-                .map((el, index) => ({
-                    index,
-                    tag: el.tagName.toLowerCase(),
-                    id: el.id || null,
-                    name: el.getAttribute('name'),
-                    text: (el.innerText || el.value || '').trim(),
-                    title: el.title || null,
-                    aria_label: el.getAttribute('aria-label')
-                }))""",
-            self.SAVE_PATTERN,
-        )
+        return self.page.evaluate("""pattern => [...document.querySelectorAll('button, a, input[type=submit]')]
+            .filter(el => {
+                const style = window.getComputedStyle(el);
+                const visible = style.display !== 'none' && style.visibility !== 'hidden';
+                const text = [el.innerText, el.value, el.title, el.getAttribute('aria-label'), el.name, el.id]
+                    .filter(Boolean).join(' ');
+                return visible && new RegExp(pattern, 'i').test(text);
+            })
+            .map(el => ({
+                tag: el.tagName.toLowerCase(), id: el.id || null,
+                name: el.getAttribute('name'),
+                text: (el.innerText || el.value || '').trim(),
+                title: el.title || null, aria_label: el.getAttribute('aria-label')
+            }))""", self.SAVE_PATTERN)
 
     def save(self, *, confirm: bool = False, timeout: int = 30_000) -> SaveResult:
         delta_before = self.pending_delta()
         if not self._contains_change(delta_before):
-            return SaveResult(False, False, not confirm, delta_before, delta_before, [])
+            return SaveResult(False, False, not confirm, delta_before, delta_before, [], False, "no_pending_changes")
         if not confirm:
-            return SaveResult(False, False, True, delta_before, None, [])
+            return SaveResult(False, False, True, delta_before, None, [], False, "dry_run")
 
         controls = self.save_controls()
         if len(controls) != 1:
-            raise PersistenceError(
-                f"Expected exactly one visible GLPI save control, found {len(controls)}"
-            )
+            raise PersistenceError(f"Expected exactly one visible GLPI save control, found {len(controls)}")
 
-        recorder = ImpactNetworkRecorder(self.page).start()
+        # Capture all XHR/fetch requests during the short save window because the
+        # private endpoint name is not assumed in advance.
+        recorder = ImpactNetworkRecorder(self.page, impact_only=False).start()
         try:
             self.page.locator(self._selector(controls[0])).first.click()
-            self.page.wait_for_timeout(500)
             try:
-                self.page.wait_for_function(
-                    """() => {
-                        if (!window.GLPIImpact || !GLPIImpact.computeDelta) return false;
-                        const delta = GLPIImpact.computeDelta();
-                        const changed = value => {
-                            if (Array.isArray(value)) return value.length > 0;
-                            if (value && typeof value === 'object')
-                                return Object.values(value).some(changed);
-                            return value !== null && value !== undefined && value !== false && value !== '' && value !== 0;
-                        };
-                        return !changed(delta);
-                    }""",
-                    timeout=timeout,
-                )
-            except Exception:
+                self.page.wait_for_function("""() => {
+                    if (!window.GLPIImpact || !GLPIImpact.computeDelta) return false;
+                    const delta = GLPIImpact.computeDelta();
+                    const changed = value => {
+                        if (Array.isArray(value)) return value.length > 0;
+                        if (value && typeof value === 'object') return Object.values(value).some(changed);
+                        return value !== null && value !== undefined && value !== false && value !== '' && value !== 0;
+                    };
+                    return !changed(delta);
+                }""", timeout=timeout)
+            except PlaywrightTimeoutError:
                 pass
         finally:
             recorder.stop()
 
         delta_after = self.pending_delta()
-        persisted = not self._contains_change(delta_after)
+        delta_cleared = not self._contains_change(delta_after)
+        requests = recorder.snapshot()
+
+        # Empty delta is evidence that the client accepted the action, but it is
+        # not by itself proof that GLPI Cloud persisted the relationship.
+        verification = "client_delta_cleared" if delta_cleared else "pending_delta_remains"
         return SaveResult(
-            True,
-            persisted,
-            False,
-            delta_before,
-            delta_after,
-            recorder.snapshot(),
+            attempted=True,
+            persisted=False,
+            dry_run=False,
+            delta_before=delta_before,
+            delta_after=delta_after,
+            requests=requests,
+            delta_cleared=delta_cleared,
+            verification=verification,
         )
 
     @classmethod

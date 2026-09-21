@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from .builder import ImpactBuilder
+from .graph import ImpactEdge
 from .network import ImpactNetworkRecorder
 
 
@@ -22,10 +23,11 @@ class SaveResult:
     requests: list[dict[str, Any]] | None = None
     delta_cleared: bool = False
     verification: str = "not_attempted"
+    reloaded_edge_present: bool | None = None
 
 
 class ImpactPersistence:
-    """Persist through GLPI UI and report evidence without overclaiming success."""
+    """Persist through GLPI UI and verify writes by reloading the workspace."""
 
     SAVE_PATTERN = r"save|apply|update|guardar|aplicar|actualizar"
 
@@ -55,7 +57,14 @@ class ImpactPersistence:
                 title: el.title || null, aria_label: el.getAttribute('aria-label')
             }))""", self.SAVE_PATTERN)
 
-    def save(self, *, confirm: bool = False, timeout: int = 30_000) -> SaveResult:
+    def save(
+        self,
+        *,
+        confirm: bool = False,
+        timeout: int = 30_000,
+        expected_edge: ImpactEdge | None = None,
+        reload_workspace: Callable[[], None] | None = None,
+    ) -> SaveResult:
         delta_before = self.pending_delta()
         if not self._contains_change(delta_before):
             return SaveResult(False, False, not confirm, delta_before, delta_before, [], False, "no_pending_changes")
@@ -66,8 +75,6 @@ class ImpactPersistence:
         if len(controls) != 1:
             raise PersistenceError(f"Expected exactly one visible GLPI save control, found {len(controls)}")
 
-        # Capture all XHR/fetch requests during the short save window because the
-        # private endpoint name is not assumed in advance.
         recorder = ImpactNetworkRecorder(self.page, impact_only=False).start()
         try:
             self.page.locator(self._selector(controls[0])).first.click()
@@ -90,19 +97,27 @@ class ImpactPersistence:
         delta_after = self.pending_delta()
         delta_cleared = not self._contains_change(delta_after)
         requests = recorder.snapshot()
-
-        # Empty delta is evidence that the client accepted the action, but it is
-        # not by itself proof that GLPI Cloud persisted the relationship.
+        persisted = False
+        reloaded_edge_present: bool | None = None
         verification = "client_delta_cleared" if delta_cleared else "pending_delta_remains"
+
+        if expected_edge is not None and reload_workspace is not None:
+            reload_workspace()
+            self.builder.wait_until_ready(timeout=timeout)
+            reloaded_edge_present = self.builder.has_edge(expected_edge)
+            persisted = reloaded_edge_present
+            verification = "verified_after_reload" if persisted else "missing_after_reload"
+
         return SaveResult(
             attempted=True,
-            persisted=False,
+            persisted=persisted,
             dry_run=False,
             delta_before=delta_before,
             delta_after=delta_after,
             requests=requests,
             delta_cleared=delta_cleared,
             verification=verification,
+            reloaded_edge_present=reloaded_edge_present,
         )
 
     @classmethod

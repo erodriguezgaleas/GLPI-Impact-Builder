@@ -35,6 +35,10 @@ def test_opaque_body_is_not_exposed():
     assert ImpactNetworkRecorder.redact_post_data("raw secret-ish payload without form encoding") == "<opaque body omitted>"
 
 
+def test_bare_text_with_ampersand_is_still_opaque():
+    assert ImpactNetworkRecorder.redact_post_data("one&two&three") == "<opaque body omitted>"
+
+
 def test_successful_write_responses_excludes_reads_and_failures():
     recorder = object.__new__(ImpactNetworkRecorder)
     recorder.requests = [

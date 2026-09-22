@@ -64,7 +64,9 @@ class ImpactNetworkRecorder:
             return json.dumps(cls._redact_value(json.loads(post_data)), ensure_ascii=False)
         except (json.JSONDecodeError, TypeError):
             pass
-        pairs = parse_qsl(post_data, keep_blank_values=True)
+        # parse_qsl treats any bare text as a key with an empty value. Only
+        # classify the body as form-encoded when assignment syntax is present.
+        pairs = parse_qsl(post_data, keep_blank_values=True) if "=" in post_data else []
         if pairs:
             return urlencode([(k, "<redacted>" if cls._sensitive(k) else v) for k, v in pairs])
         return "<opaque body omitted>"

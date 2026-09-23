@@ -28,7 +28,17 @@ def test_save_result_can_distinguish_reload_verification():
         delta_cleared=True,
         verification="verified_after_reload",
         reloaded_edge_present=True,
+        successful_write_responses=1,
     )
     assert result.persisted
     assert result.reloaded_edge_present is True
     assert result.verification == "verified_after_reload"
+    assert result.successful_write_responses == 1
+
+
+def test_selector_prefers_stable_id():
+    assert ImpactPersistence._selector({"tag": "button", "id": "impact-save", "name": "save"}) == '[id="impact-save"]'
+
+
+def test_selector_falls_back_to_name():
+    assert ImpactPersistence._selector({"tag": "button", "id": None, "name": "save"}) == 'button[name="save"]'

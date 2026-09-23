@@ -104,12 +104,17 @@ class ImpactPersistence:
         reloaded_edge_present: bool | None = None
         verification = "client_delta_cleared" if delta_cleared else "pending_delta_remains"
 
-        if expected_edge is not None and reload_workspace is not None:
-            reload_workspace()
-            self.builder.wait_until_ready(timeout=timeout)
-            reloaded_edge_present = self.builder.has_edge(expected_edge)
-            persisted = reloaded_edge_present
-            verification = "verified_after_reload" if persisted else "missing_after_reload"
+        # Never reload while GLPI still reports unsaved changes: doing so could
+        # destroy diagnostic state and turn a failed save into a false positive.
+        if delta_cleared and expected_edge is not None and reload_workspace is not None:
+            try:
+                reload_workspace()
+                self.builder.wait_until_ready(timeout=timeout)
+                reloaded_edge_present = self.builder.has_edge(expected_edge)
+                persisted = reloaded_edge_present
+                verification = "verified_after_reload" if persisted else "missing_after_reload"
+            except PlaywrightTimeoutError:
+                verification = "reload_verification_timeout"
 
         return SaveResult(
             attempted=True,
